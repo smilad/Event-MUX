@@ -136,6 +136,20 @@ make lint      # go vet
 make tidy      # go mod tidy
 ```
 
+## Contributing
+
+We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
+
+### Quick Steps
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Make your changes
+4. Run tests (`make test`)
+5. Commit (`git commit -m 'Add my feature'`)
+6. Push (`git push origin feature/my-feature`)
+7. Open a Pull Request
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
