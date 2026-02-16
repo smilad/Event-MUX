@@ -12,8 +12,10 @@ type Message interface {
 	Nack() error
 }
 
-// Handler processes a message within a context.
+// Handler is the low-level handler used by broker subscriptions.
+// Users should prefer HandlerFunc which receives a Context.
 type Handler func(ctx context.Context, msg Message) error
 
-// Middleware wraps a Handler to add cross-cutting behavior.
+// Middleware is the low-level middleware used internally.
+// Users should prefer MiddlewareFunc which receives a Context.
 type Middleware func(Handler) Handler

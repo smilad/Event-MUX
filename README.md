@@ -2,13 +2,15 @@
 
 Broker-agnostic, middleware-driven message routing framework for Go.
 
-EventMux provides an Echo-like API for message brokers. Register topic handlers, apply middleware, and swap brokers without changing business logic.
+EventMux provides an **Echo-like Context API** for message brokers. Bind payloads, ack/nack messages, republish to other topics — all through a clean `c.Method()` interface, just like writing HTTP handlers.
 
 ## Features
 
+- **Echo-style Context** — `c.Bind()`, `c.Ack()`, `c.Nack()`, `c.Republish()`
 - **Broker-agnostic** — Kafka, RabbitMQ, NATS via plugins
 - **Middleware-driven** — Logging, recovery, metrics (chainable)
 - **Pluggable topic matching** — Exact, single-level (`*`), multi-level (`#`) wildcards
+- **Pluggable serialization** — JSON by default, swap to Protobuf/Avro via `Binder`
 - **Clean architecture** — Core has zero broker dependencies
 - **Production-grade** — Graceful shutdown, context propagation, no data races
 
@@ -18,9 +20,9 @@ EventMux provides an Echo-like API for message brokers. Register topic handlers,
 package main
 
 import (
-    "context"
     "fmt"
     "log"
+    "context"
 
     "github.com/miladsoleymani/eventmux"
     "github.com/miladsoleymani/eventmux/broker"
@@ -29,32 +31,76 @@ import (
     _ "github.com/miladsoleymani/eventmux/plugins/kafka"
 )
 
+type Order struct {
+    ID     int    `json:"id"`
+    Amount int    `json:"amount"`
+}
+
 func main() {
-    b, err := broker.Create("kafka", broker.Config{
+    b, _ := broker.Create("kafka", broker.Config{
         Brokers: []string{"localhost:9092"},
         Group:   "my-service",
     })
-    if err != nil {
-        log.Fatal(err)
-    }
 
     r := eventmux.New(b)
     r.Use(middleware.Recovery())
     r.Use(middleware.Logging())
 
-    r.Handle("orders.created", func(ctx context.Context, msg eventmux.Message) error {
-        fmt.Printf("Order: %s\n", msg.Value())
-        return msg.Ack()
+    r.Handle("orders.created", func(c eventmux.Context) error {
+        var order Order
+        if err := c.Bind(&order); err != nil {
+            return c.Nack()
+        }
+
+        fmt.Printf("Order %d: $%d\n", order.ID, order.Amount)
+
+        if order.Amount > 10000 {
+            c.Republish("orders.review") // send to review queue
+        }
+
+        return c.Ack()
     })
 
     r.Start(context.Background())
 }
 ```
 
+## Context API
+
+Every handler receives an `eventmux.Context` — the central abstraction:
+
+```go
+r.Handle("topic", func(c eventmux.Context) error {
+    // === Read ===
+    c.Topic()                  // subscription topic
+    c.Key()                    // message key ([]byte)
+    c.Value()                  // raw body ([]byte)
+    c.Header("trace-id")      // single header
+    c.Headers()                // all headers
+    c.Message()                // underlying Message interface
+    c.Context()                // context.Context
+
+    // === Deserialize ===
+    var payload MyStruct
+    c.Bind(&payload)           // JSON by default, pluggable via Binder
+
+    // === Respond ===
+    c.Ack()                    // commit offset / acknowledge
+    c.Nack()                   // reject / trigger redelivery
+    c.Republish("other.topic") // send to another topic (dead-letter, fan-out)
+
+    // === Store (middleware → handler data passing) ===
+    c.Set("key", value)
+    val, ok := c.Get("key")
+
+    return nil
+})
+```
+
 ## Architecture
 
 ```
-/core              Contracts, router, matcher, middleware (no broker imports)
+/core              Contracts, context, router, matcher, binder, middleware
 /broker            Registry + config (factory pattern)
 /plugins/kafka     Kafka adapter (segmentio/kafka-go)
 /plugins/rabbitmq  RabbitMQ adapter (amqp091-go)
@@ -78,6 +124,20 @@ Replace the matcher:
 r.SetMatcher(myCustomMatcher)
 ```
 
+## Serialization
+
+JSON by default. Swap the binder for Protobuf, Avro, or anything:
+
+```go
+type ProtobufBinder struct{}
+
+func (ProtobufBinder) Bind(data []byte, v any) error {
+    return proto.Unmarshal(data, v.(proto.Message))
+}
+
+r.SetBinder(ProtobufBinder{})
+```
+
 ## Middleware
 
 Middleware wraps handlers and executes in reverse registration order:
@@ -90,20 +150,21 @@ r.Use(middleware.Logging())   // inner
 ### Built-in
 
 - `middleware.Recovery()` — Panic recovery with stack trace logging
-- `middleware.Logging()` — Request duration and error logging
-- `middleware.Metrics(topic, collector)` — Pluggable metrics (bring your own backend)
+- `middleware.Logging()` — Topic, key, duration, and error logging
+- `middleware.Metrics(collector)` — Pluggable metrics (bring your own backend)
 
 ### Custom Middleware
 
 ```go
-func Auth() eventmux.Middleware {
-    return func(next eventmux.Handler) eventmux.Handler {
-        return func(ctx context.Context, msg eventmux.Message) error {
-            token := msg.Headers()["auth-token"]
+func Auth() eventmux.MiddlewareFunc {
+    return func(next eventmux.HandlerFunc) eventmux.HandlerFunc {
+        return func(c eventmux.Context) error {
+            token := c.Header("auth-token")
             if !valid(token) {
-                return errors.New("unauthorized")
+                return c.Nack()
             }
-            return next(ctx, msg)
+            c.Set("user-id", extractUserID(token))
+            return next(c)
         }
     }
 }

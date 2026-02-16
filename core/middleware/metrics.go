@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"time"
 
 	"github.com/miladsoleymani/eventmux/core"
@@ -17,13 +16,12 @@ type MetricsCollector interface {
 }
 
 // Metrics returns middleware that reports processing metrics to the given collector.
-// The topic parameter identifies the subscription for metric labeling.
-func Metrics(topic string, collector MetricsCollector) core.Middleware {
-	return func(next core.Handler) core.Handler {
-		return func(ctx context.Context, msg core.Message) error {
+func Metrics(collector MetricsCollector) core.MiddlewareFunc {
+	return func(next core.HandlerFunc) core.HandlerFunc {
+		return func(c core.Context) error {
 			start := time.Now()
-			err := next(ctx, msg)
-			collector.MessageProcessed(topic, time.Since(start), err)
+			err := next(c)
+			collector.MessageProcessed(c.Topic(), time.Since(start), err)
 			return err
 		}
 	}

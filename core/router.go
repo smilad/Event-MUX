@@ -10,19 +10,21 @@ import (
 // for registering topic handlers and middleware.
 type Router struct {
 	broker      Broker
-	middlewares []Middleware
-	routes      map[string]Handler
+	binder      Binder
+	middlewares []MiddlewareFunc
+	routes      map[string]HandlerFunc
 	matcher     TopicMatcher
 	mu          sync.RWMutex
 	started     bool
 }
 
 // New creates a Router bound to the given Broker.
-// It uses DefaultMatcher for topic matching.
+// It uses DefaultMatcher for topic matching and JSONBinder for deserialization.
 func New(b Broker) *Router {
 	return &Router{
 		broker:  b,
-		routes:  make(map[string]Handler),
+		binder:  JSONBinder{},
+		routes:  make(map[string]HandlerFunc),
 		matcher: DefaultMatcher{},
 	}
 }
@@ -34,16 +36,32 @@ func (r *Router) SetMatcher(m TopicMatcher) {
 	r.matcher = m
 }
 
+// SetBinder replaces the message binder used by Context.Bind().
+// Use this to switch to Protobuf, Avro, or any custom format.
+func (r *Router) SetBinder(b Binder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.binder = b
+}
+
 // Use registers global middleware. Middleware is applied in reverse
 // registration order (last registered wraps outermost).
-func (r *Router) Use(m Middleware) {
+func (r *Router) Use(m MiddlewareFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.middlewares = append(r.middlewares, m)
 }
 
 // Handle registers a handler for a topic pattern.
-func (r *Router) Handle(topic string, h Handler) {
+//
+//	r.Handle("orders.created", func(c eventmux.Context) error {
+//	    var order Order
+//	    if err := c.Bind(&order); err != nil {
+//	        return err
+//	    }
+//	    return c.Ack()
+//	})
+func (r *Router) Handle(topic string, h HandlerFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.routes[topic] = h
@@ -68,14 +86,16 @@ func (r *Router) Start(ctx context.Context) error {
 	}
 	r.started = true
 
-	// Snapshot routes and middleware under lock
-	routes := make(map[string]Handler, len(r.routes))
+	// Snapshot routes, middleware, and config under lock
+	routes := make(map[string]HandlerFunc, len(r.routes))
 	for k, v := range r.routes {
 		routes[k] = v
 	}
-	mws := make([]Middleware, len(r.middlewares))
+	mws := make([]MiddlewareFunc, len(r.middlewares))
 	copy(mws, r.middlewares)
 	matcher := r.matcher
+	binder := r.binder
+	broker := r.broker
 	r.mu.Unlock()
 
 	// Build the dispatching handler for each route
@@ -85,21 +105,22 @@ func (r *Router) Start(ctx context.Context) error {
 	for pattern, handler := range routes {
 		wrapped := applyMiddleware(handler, mws)
 
-		dispatchHandler := func(ctx context.Context, msg Message) error {
-			return wrapped(ctx, msg)
+		// Bridge from low-level Handler (broker subscription) to Context-based HandlerFunc
+		bridgeHandler := func(c context.Context, msg Message) error {
+			ec := NewContext(c, msg, pattern, broker, binder)
+			return wrapped(ec)
 		}
 
-		// For wildcard patterns, subscribe to the pattern and let the broker
-		// deliver matching messages. The matcher is used as a safety check.
-		_ = matcher // matcher available for future per-message filtering
+		// matcher available for future per-message filtering
+		_ = matcher
 
 		wg.Add(1)
 		go func(p string, h Handler) {
 			defer wg.Done()
-			if err := r.broker.Subscribe(ctx, p, h); err != nil {
+			if err := broker.Subscribe(ctx, p, h); err != nil {
 				errCh <- fmt.Errorf("eventmux: subscribe %q: %w", p, err)
 			}
-		}(pattern, dispatchHandler)
+		}(pattern, bridgeHandler)
 	}
 
 	// Wait for context cancellation or subscription errors
@@ -122,8 +143,8 @@ func (r *Router) Start(ctx context.Context) error {
 }
 
 // applyMiddleware wraps a handler with middleware in reverse order.
-// Given middleware [A, B, C], the call order is C -> B -> A -> handler.
-func applyMiddleware(h Handler, mws []Middleware) Handler {
+// Given middleware [A, B, C], the call order is A -> B -> C -> handler.
+func applyMiddleware(h HandlerFunc, mws []MiddlewareFunc) HandlerFunc {
 	for i := len(mws) - 1; i >= 0; i-- {
 		h = mws[i](h)
 	}

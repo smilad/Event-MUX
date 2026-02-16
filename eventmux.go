@@ -2,7 +2,13 @@
 // It re-exports core types for convenience, so users can write:
 //
 //	r := eventmux.New(b)
-//	r.Handle("orders.created", handler)
+//	r.Handle("orders.created", func(c eventmux.Context) error {
+//	    var order Order
+//	    if err := c.Bind(&order); err != nil {
+//	        return err
+//	    }
+//	    return c.Ack()
+//	})
 //	r.Start(ctx)
 package eventmux
 
@@ -12,11 +18,13 @@ import (
 
 // Re-export core types at the package level for ergonomic usage.
 type (
-	Message    = core.Message
-	Handler    = core.Handler
-	Middleware = core.Middleware
-	Broker     = core.Broker
-	Router     = core.Router
+	Context       = core.Context
+	Message       = core.Message
+	HandlerFunc   = core.HandlerFunc
+	MiddlewareFunc = core.MiddlewareFunc
+	Broker        = core.Broker
+	Binder        = core.Binder
+	Router        = core.Router
 )
 
 // New creates a new Router bound to the given Broker.

@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"log"
 	"time"
 
@@ -9,17 +8,19 @@ import (
 )
 
 // Logging returns middleware that logs message processing duration and errors.
-func Logging() core.Middleware {
-	return func(next core.Handler) core.Handler {
-		return func(ctx context.Context, msg core.Message) error {
+func Logging() core.MiddlewareFunc {
+	return func(next core.HandlerFunc) core.HandlerFunc {
+		return func(c core.Context) error {
 			start := time.Now()
-			err := next(ctx, msg)
+			err := next(c)
 			elapsed := time.Since(start)
 
 			if err != nil {
-				log.Printf("[EventMux] ERROR key=%s elapsed=%s err=%v", string(msg.Key()), elapsed, err)
+				log.Printf("[EventMux] ERROR topic=%s key=%s elapsed=%s err=%v",
+					c.Topic(), string(c.Key()), elapsed, err)
 			} else {
-				log.Printf("[EventMux] OK    key=%s elapsed=%s", string(msg.Key()), elapsed)
+				log.Printf("[EventMux] OK    topic=%s key=%s elapsed=%s",
+					c.Topic(), string(c.Key()), elapsed)
 			}
 			return err
 		}

@@ -16,6 +16,13 @@ import (
 	_ "github.com/miladsoleymani/eventmux/plugins/kafka"
 )
 
+// Order represents a domain event payload.
+type Order struct {
+	ID     int    `json:"id"`
+	Amount int    `json:"amount"`
+	Status string `json:"status"`
+}
+
 func main() {
 	cfg := broker.Config{
 		Brokers: []string{"localhost:9092"},
@@ -33,15 +40,29 @@ func main() {
 	r.Use(middleware.Recovery())
 	r.Use(middleware.Logging())
 
-	// Route handlers
-	r.Handle("orders.created", func(ctx context.Context, msg eventmux.Message) error {
-		fmt.Printf("Order created: %s\n", string(msg.Value()))
-		return msg.Ack()
+	// Route handlers — Echo-style Context API
+	r.Handle("orders.created", func(c eventmux.Context) error {
+		var order Order
+		if err := c.Bind(&order); err != nil {
+			return c.Nack() // bad payload — nack for redelivery
+		}
+
+		fmt.Printf("Order created: %+v (trace: %s)\n", order, c.Header("trace-id"))
+
+		// Process the order...
+		if order.Amount > 10000 {
+			// Route high-value orders to a review queue
+			if err := c.Republish("orders.review"); err != nil {
+				return err
+			}
+		}
+
+		return c.Ack()
 	})
 
-	r.Handle("payments.completed", func(ctx context.Context, msg eventmux.Message) error {
-		fmt.Printf("Payment completed: %s\n", string(msg.Value()))
-		return msg.Ack()
+	r.Handle("payments.completed", func(c eventmux.Context) error {
+		fmt.Printf("Payment completed: %s\n", string(c.Value()))
+		return c.Ack()
 	})
 
 	// Graceful shutdown

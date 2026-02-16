@@ -62,6 +62,7 @@ func (b *Broker) Close() error {
 }
 
 // Deliver simulates an incoming message to a registered handler.
+// It invokes the low-level Handler (which the Router bridges to Context internally).
 func (b *Broker) Deliver(ctx context.Context, topic string, msg core.Message) error {
 	b.mu.Lock()
 	h, ok := b.handlers[topic]
