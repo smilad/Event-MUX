@@ -1,0 +1,21 @@
+# IDE
+.idea/
+
+# Go
+bin/
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
